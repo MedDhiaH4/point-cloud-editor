@@ -1,6 +1,8 @@
+// src/ai-segmentation.ts
 import * as pc from 'playcanvas';
 import { SelectionManager } from './selection-manager';
 import { HistoryManager } from './history';
+import { SceneManager } from './scene-manager'; // ⚡ NEW
 
 interface PromptPoint {
     pos: pc.Vec3;
@@ -13,20 +15,20 @@ export class AISegmentationTool {
     private cameraEntity: pc.Entity;
     private selectionManager: SelectionManager;
     private history: HistoryManager;
+    private sceneManager: SceneManager; // ⚡ NEW
     
     public targetFocalPoint: pc.Vec3 | null = null;
-
-    // ⚡ PROMPT STATE MANAGEMENT
     public inputMode: 'none' | 'positive' | 'negative' = 'none';
     private promptPoints: PromptPoint[] = [];
     private redoStack: PromptPoint[] = [];
 
-    // ⚡ Make sure historyManager is the 4th argument here!
-    constructor(app: pc.Application, cameraEntity: pc.Entity, selectionManager: SelectionManager, historyManager: HistoryManager) {
+    // ⚡ Add SceneManager to constructor
+    constructor(app: pc.Application, cameraEntity: pc.Entity, selectionManager: SelectionManager, historyManager: HistoryManager, sceneManager: SceneManager) {
         this.app = app;
         this.cameraEntity = cameraEntity;
         this.selectionManager = selectionManager;
         this.history = historyManager;
+        this.sceneManager = sceneManager; 
 
         this.bindEvents();
     }
@@ -36,7 +38,6 @@ export class AISegmentationTool {
             if (e.repeat) return;
             const key = e.key.toLowerCase();
 
-            // ⚡ THE FIX: Catch '=' and '_' in case the user doesn't press Shift!
             if (key === '+' || key === '=') {
                 this.inputMode = this.inputMode === 'positive' ? 'none' : 'positive';
                 console.log(`🖌️ Mode: ${this.inputMode.toUpperCase()}`);
@@ -56,47 +57,35 @@ export class AISegmentationTool {
                 this.inputMode = 'none';
                 console.log("🛑 Input Mode Cancelled.");
             }
-            // ⚡ THE FIX: Removed the catch-all "else" block that was silently 
-            // canceling your mode when you pressed WASD to move the camera!
         });
     }
 
-    // ⚡ CALLED BY MAIN.TS WHEN THE USER CLICKS THE MOUSE
     public handleSingleClick(hitPoint: pc.Vec3) {
         if (this.inputMode === 'none') return;
         this.addPromptPoint(hitPoint, this.inputMode === 'positive');
     }
 
     private addPromptPoint(pos: pc.Vec3, isPositive: boolean) {
-        // 1. Create a blank entity (NO sphere model!)
         const pointEntity = new pc.Entity('PromptPoint');
-        
-        // 2. Create a literal 1-point mesh (a duplicate of how the point cloud works)
         const mesh = new pc.Mesh(this.app.graphicsDevice);
-        mesh.setPositions(new Float32Array([0, 0, 0])); // Local center
+        mesh.setPositions(new Float32Array([0, 0, 0])); 
         mesh.update(pc.PRIMITIVE_POINTS);
         
-        // 3. Set the color to Green or Red
         const material = new pc.StandardMaterial();
         material.useLighting = false;
         material.emissive = isPositive ? new pc.Color(0, 1, 0) : new pc.Color(1, 0, 0);
         
-        // 4. Force this single point to always be size 3.0 pixels!
         const chunks = material.getShaderChunks(pc.SHADERLANGUAGE_GLSL);
         chunks.set('litUserMainEndVS', `
-            gl_PointSize = 5.0; // Exactly as you requested!
+            gl_PointSize = 5.0; 
         `);
         material.update();
         
         const instance = new pc.MeshInstance(mesh, material);
         pointEntity.addComponent('render', { meshInstances: [instance] });
-        
-        // 5. Place it exactly on the raycast hit position!
         pointEntity.setPosition(pos);
-        
         this.app.root.addChild(pointEntity);
         
-        // Save to state
         const promptData = { pos: pos.clone(), isPositive, entity: pointEntity };
         this.promptPoints.push(promptData);
         
@@ -122,7 +111,7 @@ export class AISegmentationTool {
             return;
         }
         const p = this.promptPoints.pop()!;
-        p.entity.enabled = false; // Hide it
+        p.entity.enabled = false; 
         this.redoStack.push(p);
         console.log("⏪ Undid Last Prompt.");
     }
@@ -130,7 +119,7 @@ export class AISegmentationTool {
     private redoPrompt() {
         if (this.redoStack.length === 0) return;
         const p = this.redoStack.pop()!;
-        p.entity.enabled = true; // Show it
+        p.entity.enabled = true; 
         this.promptPoints.push(p);
         console.log("⏩ Redid Last Prompt.");
     }
@@ -144,11 +133,8 @@ export class AISegmentationTool {
 
     public setFocalPoint(point: pc.Vec3) {
         this.targetFocalPoint = point.clone();
-        
-        // Clear old dots, and add this as the indestructible first positive point!
         this.clearPromptPoints();
         this.addPromptPoint(point, true);
-        
         console.log(`🎯 Focal Point Set: [${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)}]`);
     }
 
@@ -159,12 +145,11 @@ export class AISegmentationTool {
         }
 
         const pointCloudEntity = this.app.root.findByName('PointCloud') as pc.Entity;
-        if (!pointCloudEntity) return;
+        if (!pointCloudEntity || !this.sceneManager.positions) return; // ⚡ FIXED
 
-        const positions = (window as any).globalPositionsArray as Float32Array; 
+        const positions = this.sceneManager.positions; // ⚡ Safe access
         const numPoints = positions.length / 3;
 
-        // ⚡ THE FIX: Calculate the 2D pixels FIRST, before we move the camera!
         const prompt_coords: number[][] = [];
         const prompt_labels: number[] = [];
 
@@ -175,8 +160,6 @@ export class AISegmentationTool {
             prompt_coords.push([Math.round(screenPos.x), Math.round(screenPos.y)]);
             prompt_labels.push(p.isPositive ? 1 : 0);
 
-            // ⚡ THE FIX: Instantly hide the physical 3D sphere so it does NOT
-            // show up in the images SAM is about to process!
             p.entity.enabled = false; 
         });
 
@@ -185,10 +168,8 @@ export class AISegmentationTool {
         const width = canvas.width;
         const height = canvas.height;
 
-        // Now the camera takes pictures of a perfectly clean scene!
         const videoFrames = await this.captureWindshieldWiper(this.targetFocalPoint);
         if (videoFrames.length === 0) {
-            // If the capture fails for some reason, unhide the dots so the user isn't confused
             this.promptPoints.forEach(p => p.entity.enabled = true); 
             return;
         }
@@ -218,7 +199,6 @@ export class AISegmentationTool {
             console.error("❌ Orbit Failed:", e);
         } finally {
             document.getElementById('loading-overlay')?.classList.add('hidden');
-            // Permanently clean up the dots from memory when the AI is finished
             this.clearPromptPoints(); 
         }
     }

@@ -1,3 +1,4 @@
+// src/main.ts
 import * as pc from 'playcanvas';
 import { CameraController } from './camera-control';
 import { parsePLY } from './ply-loader';
@@ -10,6 +11,7 @@ import { HistoryManager } from './history';
 import { RegionGrower } from './region-grower';
 import { initPointSizeSlider } from './point-size-slider';
 import { initDensificationSlider } from './g-pc-densification';
+import { SceneManager } from './scene-manager'; // ⚡ NEW
 
 // --- ENGINE & DOM SETUP ---
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -33,6 +35,8 @@ window.addEventListener('resize', resize);
 resize();
 
 // --- SCENE & MODULE SETUP ---
+const sceneManager = new SceneManager(); // ⚡ CLEAN INITIALIZATION
+
 const camera = new pc.Entity('Camera');
 camera.addComponent('camera', { clearColor: new pc.Color(0.01, 0.01, 0.01) });
 app.root.addChild(camera);
@@ -41,38 +45,40 @@ const cameraController = new CameraController(camera, container, () => app.rende
 const lodManager = new LODManager(camera);
 const focalManager = new FocalPointManager(camera, cameraController, container, () => app.renderNextFrame = true);
 
-// ⚡ SELECTION UI & HIGHLIGHT LOGIC
 const historyManager = new HistoryManager();
-
 const selectionManager = new SelectionManager(historyManager); 
+
+// ⚡ CLEAN: Selection Highlight logic using our SceneManager
 selectionManager.onSelectionChanged = () => {
-    const leaves = (window as any).globalOctreeLeaves as any[];
-    if (!leaves) return;
+    const leaves = sceneManager.octreeLeaves;
+    if (!leaves || leaves.length === 0) return;
 
     if (leaves.length > 0 && leaves[0].indices) {
         for (const node of leaves) {
             if (!node.indices || !node.meshInstance) continue;
             
-            node.colors.set(node.originalColors);
+            node.colors!.set((node as any).originalColors);
             
             for (let i = 0; i < node.indices.length; i++) {
                 const globalIdx = node.indices[i];
                 if (selectionManager.selectedIndices.has(globalIdx)) {
-                    node.colors[i * 4 + 0] = 255; 
-                    node.colors[i * 4 + 1] = 255; 
-                    node.colors[i * 4 + 2] = 0;   
+                    node.colors![i * 4 + 0] = 255; 
+                    node.colors![i * 4 + 1] = 255; 
+                    node.colors![i * 4 + 2] = 0;   
                 }
             }
             
-            node.meshInstance.mesh.setColors32(node.colors);
+            const currentCount = node.meshInstance.mesh.primitive[0].count;
+            node.meshInstance.mesh.setColors32(node.colors!);
             node.meshInstance.mesh.update(pc.PRIMITIVE_POINTS);
+            node.meshInstance.mesh.primitive[0].count = currentCount;
         }
         app.renderNextFrame = true;
         return;
     }
 
-    const positions = (window as any).globalPositionsArray;
-    const originalColors = (window as any).globalOriginalColors;
+    const positions = sceneManager.positions;
+    const originalColors = sceneManager.originalColors;
     if (!positions || !originalColors) return;
 
     const highlightColors = new Uint8Array(originalColors);
@@ -85,19 +91,18 @@ selectionManager.onSelectionChanged = () => {
     renderPointCloud(
         positions, 
         highlightColors, 
-        (window as any).globalNormalsArray, // ⚡ Fallback logic 
-        (window as any).sceneMin, 
-        (window as any).sceneMax, 
-        (window as any).isGaussianSplat
+        sceneManager.normals!, 
+        sceneManager.sceneMin, 
+        sceneManager.sceneMax, 
+        sceneManager.isGaussianSplat
     );
     app.renderNextFrame = true;
 };
 
-// ⚡ ADVANCED TOOLS
-const regionGrower = new RegionGrower(app, selectionManager, historyManager);
-const aiTool = new AISegmentationTool(app, camera, selectionManager, historyManager);
+// ⚡ Inject SceneManager into Tools
+const regionGrower = new RegionGrower(app, selectionManager, historyManager, sceneManager);
+const aiTool = new AISegmentationTool(app, camera, selectionManager, historyManager, sceneManager);
 
-// ⚡ CONNECT MOUSE CLICKS TO AI TOOL PROMPT DOTS
 container.addEventListener('mousedown', (e: MouseEvent) => {
     if (e.button === 0 && aiTool.inputMode !== 'none') {
         const hitPoint = focalManager.raycast(e.offsetX, e.offsetY);
@@ -123,7 +128,6 @@ let forceGizmoUpdate = true;
 
 app.on('update', (dt) => {
     regionGrower.update();
-    
     cameraController.update(dt);
     const moving = cameraController.isMoving;
 
@@ -169,40 +173,30 @@ app.on('update', (dt) => {
             lodManager.resetTimer();
             isAsleep = false;
         }
-
         const activePoints = lodManager.update(); 
-        if (activePoints > 0) {
-            visibleLabel.innerText = activePoints.toLocaleString();
-        }
-
+        if (activePoints > 0) visibleLabel.innerText = activePoints.toLocaleString();
         fpsLabel.innerText = Math.round(lodManager.currentFPS).toString();
         app.renderNextFrame = true;
-
     } else {
         if (!isAsleep) {
             fpsLabel.innerText = "0 (Asleep)";
             isAsleep = true;
         }
     }
-    
     wasMoving = moving;
 });
 
-// --- HELPER: COLLECT LEAVES ---
 function collectLeaves(node: OctreeNode, out: OctreeNode[]) {
     if (!node.children || node.children.length === 0) {
         out.push(node);
         return;
     }
-    for (const c of node.children) {
-        collectLeaves(c, out);
-    }
+    for (const c of node.children) collectLeaves(c, out);
 }
 
-// ⚡ ACCEPT NORMALS
 function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: Float32Array, min: pc.Vec3, max: pc.Vec3, isSplat: boolean) {
     console.log("Building Octree...");
-    const root = buildOctree(positions, colors, normals, min, max); // ⚡ Pass normals
+    const root = buildOctree(positions, colors, normals, min, max); 
 
     const old = app.root.findByName('PointCloud');
     if (old) old.destroy();
@@ -217,14 +211,9 @@ function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: 
     material.emissiveVertexColor = true;
     material.emissive = new pc.Color(1, 1, 1);
     
-    // ⚡ YOUR POINT SIZE SHADER IS SAFELY PRESERVED!
     const chunks = material.getShaderChunks(pc.SHADERLANGUAGE_GLSL);
-    chunks.set('litUserDeclarationVS', `
-        uniform float uPointSize;
-    `);
-    chunks.set('litUserMainEndVS', `
-        gl_PointSize = uPointSize; 
-    `);
+    chunks.set('litUserDeclarationVS', `uniform float uPointSize;`);
+    chunks.set('litUserMainEndVS', `gl_PointSize = uPointSize;`);
     material.update();
     
     const initialPointSize = parseFloat((document.getElementById('point-size-slider') as HTMLInputElement).value) || 1.0;
@@ -240,7 +229,6 @@ function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: 
 
         const instance = new pc.MeshInstance(mesh, material);
         (node as any).meshInstance = instance;
-        
         (node as any).originalColors = new Uint8Array(node.colors);
 
         meshInstances.push(instance);
@@ -253,10 +241,10 @@ function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: 
     lodManager.setTarget(entity, isSplat);
     focalManager.setOctree(root);
 
-    (window as any).globalOctreeLeaves = leaves;
-    (window as any).globalOctreeRoot = root; 
+    // ⚡ CLEAN: Store directly into SceneManager
+    sceneManager.octreeRoot = root;
+    sceneManager.octreeLeaves = leaves;
 
-    // ⚡ YOUR FAST UPLOADER ARRAYS PRESERVED
     const numPoints = positions.length / 3;
     const leafMap = new Int32Array(numPoints);
     const localIdxMap = new Int32Array(numPoints);
@@ -270,44 +258,8 @@ function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: 
         }
     });
 
-    (window as any).leafMap = leafMap;
-    (window as any).localIdxMap = localIdxMap;
-
-    (window as any).fastHighlight = (globalIndices: number[]) => {
-        const dirtyLeaves = new Set<number>();
-
-        for (const globalIdx of globalIndices) {
-            const leafIdx = leafMap[globalIdx];
-            const localIdx = localIdxMap[globalIdx];
-            const node = leaves[leafIdx];
-
-            if (!node || !node.colors) continue;
-
-            node.colors[localIdx * 4 + 0] = 255; 
-            node.colors[localIdx * 4 + 1] = 255; 
-            node.colors[localIdx * 4 + 2] = 0;   
-
-            dirtyLeaves.add(leafIdx); 
-        }
-
-        for (const leafIdx of dirtyLeaves) {
-            const node = leaves[leafIdx];
-
-            if (!node || !node.meshInstance || !node.colors) continue;
-
-            // ⚡ THE FIX: Save the LOD Manager's current density count!
-            const currentLodCount = node.meshInstance.mesh.primitive[0].count;
-
-            // Apply the new yellow colors
-            node.meshInstance.mesh.setColors32(node.colors);
-            
-            // This PlayCanvas function accidentally resets the count to 100%...
-            node.meshInstance.mesh.update(pc.PRIMITIVE_POINTS);
-
-            // ⚡ THE FIX: Immediately put the LOD count back before the frame renders!
-            node.meshInstance.mesh.primitive[0].count = currentLodCount;
-        }
-    };
+    sceneManager.leafMap = leafMap;
+    sceneManager.localIdxMap = localIdxMap;
 
     return root;
 }
@@ -322,12 +274,14 @@ async function loadFile(file: File) {
     const data = await parsePLY(buffer);
     if (!data) return;
 
-    (window as any).globalPositionsArray = data.positions;
-    (window as any).globalOriginalColors = new Uint8Array(data.colors);
-    (window as any).globalNormalsArray = data.normals; // ⚡ Store normals
-    (window as any).sceneMin = data.min;
-    (window as any).sceneMax = data.max;
-    (window as any).isGaussianSplat = data.isGaussianSplat;
+    // ⚡ CLEAN: Update SceneManager
+    sceneManager.reset();
+    sceneManager.positions = data.positions;
+    sceneManager.originalColors = new Uint8Array(data.colors);
+    sceneManager.normals = data.normals; 
+    sceneManager.sceneMin = data.min;
+    sceneManager.sceneMax = data.max;
+    sceneManager.isGaussianSplat = data.isGaussianSplat;
 
     const splatPanel = document.getElementById('splat-panel')!;
     const splatDivider = document.getElementById('splat-divider')!;
@@ -351,7 +305,6 @@ async function loadFile(file: File) {
         ptSizeLabel.innerText = "1.00";
     }
 
-    // ⚡ Pass normals!
     renderPointCloud(data.positions, data.colors, data.normals, data.min, data.max, data.isGaussianSplat);
     regionGrower.setData(data.positions, new Uint8Array(data.colors), data.normals, data.min, data.max);
 
@@ -390,7 +343,6 @@ document.getElementById('import-btn')!.onclick = () => {
     input.click();
 };
 
-// --- TRANSFORM CONTROLS ---
 const updateRotation = () => {
     const pcEntity = app.root.findByName('PointCloud');
     if (pcEntity) {
@@ -407,7 +359,6 @@ document.getElementById('rot-x')!.addEventListener('change', updateRotation);
 document.getElementById('rot-y')!.addEventListener('change', updateRotation);
 document.getElementById('rot-z')!.addEventListener('change', updateRotation);
 
-// --- GIZMO SNAP CONTROLS ---
 const snapCamera = (yaw: number, pitch: number) => {
     cameraController.targetYaw = yaw;
     cameraController.targetPitch = pitch;
@@ -428,7 +379,6 @@ attachGizmoClick('gizmo-label-x', 90, 0);
 attachGizmoClick('gizmo-label-y', 0, 0);      
 attachGizmoClick('gizmo-label-z', 0, -89.9);  
 
-// --- UI TOGGLES & RESET ---
 document.getElementById('toggle-panel-btn')!.addEventListener('click', () => {
     document.getElementById('right-panel')!.classList.toggle('collapsed');
     setTimeout(() => {
@@ -454,11 +404,9 @@ document.getElementById('reset-scene-btn')!.addEventListener('click', () => {
     app.renderNextFrame = true;
 });
 
-// --- INITIALIZE UI CONTROLLERS ---
 initDensificationSlider(lodManager);
 initPointSizeSlider(app, lodManager);
 
-// ⚡ REGION GROWING TOGGLE (G KEY)
 window.addEventListener('keydown', (e) => {
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.repeat) return;
     
@@ -473,7 +421,7 @@ window.addEventListener('keydown', (e) => {
         if (selectionManager.selectedIndices.size > 0) {
             seeds = Array.from(selectionManager.selectedIndices);
         } else if (focalManager.cameraController.targetPivot) {
-            const root = (window as any).globalOctreeRoot;
+            const root = sceneManager.octreeRoot; // ⚡ CLEAN: Access via Manager
             if (root) {
                 const nearest = findNearestNeighbors(root, focalManager.cameraController.targetPivot, 1);
                 if (nearest.length > 0) seeds = [nearest[0]];
@@ -481,11 +429,9 @@ window.addEventListener('keydown', (e) => {
         }
 
         if (seeds.length > 0) {
-            // ⚡ THE FIX: Read the UI strictness boxes!
             const colStrict = parseFloat((document.getElementById('color-strict-val') as HTMLInputElement).value) ?? 0.75;
             const geoStrict = parseFloat((document.getElementById('geom-strict-val') as HTMLInputElement).value) ?? 0.75;
             
-            // Pass them to the Grower
             regionGrower.toggleGrowth(seeds, colStrict, geoStrict);
         } else {
             console.warn("⚠️ No selection or focal point to grow from!");

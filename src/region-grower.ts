@@ -1,14 +1,17 @@
+// src/region-grower.ts
 import * as pc from 'playcanvas';
 import { SelectionManager } from './selection-manager';
 import { HistoryManager } from './history';
+import { SceneManager } from './scene-manager'; // ⚡ NEW
 
 export class RegionGrower {
     private app: pc.Application;
     private selectionManager: SelectionManager;
     private historyManager: HistoryManager;
+    private sceneManager: SceneManager; // ⚡ NEW
     
     private colors: Uint8Array | null = null;
-    private normals: Float32Array | null = null; // ⚡ NEW
+    private normals: Float32Array | null = null; 
     
     private worker: Worker;
 
@@ -16,10 +19,11 @@ export class RegionGrower {
     private currentGrowthSession: Set<number> = new Set();
     private preGrowthState: Set<number> = new Set();
 
-    constructor(app: pc.Application, selectionManager: SelectionManager, historyManager: HistoryManager) {
+    constructor(app: pc.Application, selectionManager: SelectionManager, historyManager: HistoryManager, sceneManager: SceneManager) {
         this.app = app;
         this.selectionManager = selectionManager;
         this.historyManager = historyManager;
+        this.sceneManager = sceneManager; // ⚡ Bind it
 
         this.worker = new Worker(new URL('./growth-worker.ts', import.meta.url), { type: 'module' });
         this.bindWorkerEvents();
@@ -38,11 +42,9 @@ export class RegionGrower {
                     this.currentGrowthSession.add(idx);
                 }
                 
-                // ⚡ YOUR FAST UPLOADER IS PRESERVED
-                if ((window as any).fastHighlight) {
-                    (window as any).fastHighlight(payload);
-                    this.app.renderNextFrame = true;         
-                }
+                // ⚡ CLEAN: Safely call our SceneManager!
+                this.sceneManager.fastHighlight(payload);
+                this.app.renderNextFrame = true;         
             }
             else if (type === 'GROWTH_FINISHED') {
                 this.finalizeGrowth();
@@ -50,7 +52,6 @@ export class RegionGrower {
         };
     }
 
-    // ⚡ PASS NORMALS
     public setData(positions: Float32Array, colors: Uint8Array, normals: Float32Array, min: pc.Vec3, max: pc.Vec3) {
         this.colors = colors;
         this.normals = normals;
@@ -61,7 +62,6 @@ export class RegionGrower {
         });
     }
 
-    // ⚡ Accept the new UI parameters
     public toggleGrowth(seedIndices: number[], colorStrictness: number = 0.75, geomStrictness: number = 0.75) {
         if (this.isGrowing) {
             this.stopGrowth();
@@ -73,25 +73,36 @@ export class RegionGrower {
     private startGrowth(seedIndices: number[], colorStrictness: number, geomStrictness: number) {
         if (!this.colors || !this.normals || seedIndices.length === 0) return;
 
-        this.preGrowthState = new Set([...this.selectionManager.selectedIndices].filter(x => !seedIndices.includes(x)));
+        // ⚡ FIX 1: O(1) Set Lookup instead of O(N^2) Array Filter!
+        // This stops the main thread from freezing when you have thousands of points selected.
+        const seedSet = new Set(seedIndices);
+        this.preGrowthState = new Set();
+        for (const val of this.selectionManager.selectedIndices) {
+            if (!seedSet.has(val)) {
+                this.preGrowthState.add(val);
+            }
+        }
+        
         this.currentGrowthSession = new Set(seedIndices);
 
+        const analysisSubset = seedIndices.slice(0, 500);
+
         let sumR = 0, sumG = 0, sumB = 0;
-        for (const idx of seedIndices) {
+        for (const idx of analysisSubset) {
             sumR += this.colors[idx * 4 + 0];
             sumG += this.colors[idx * 4 + 1];
             sumB += this.colors[idx * 4 + 2];
         }
         
         const targetColor = {
-            r: sumR / seedIndices.length,
-            g: sumG / seedIndices.length,
-            b: sumB / seedIndices.length
+            r: sumR / analysisSubset.length,
+            g: sumG / analysisSubset.length,
+            b: sumB / analysisSubset.length
         };
 
         let sumNx = 0, sumNy = 0, sumNz = 0;
         let validNormals = 0;
-        for (const idx of seedIndices) {
+        for (const idx of analysisSubset) {
             const nx = this.normals[idx * 3 + 0];
             const ny = this.normals[idx * 3 + 1];
             const nz = this.normals[idx * 3 + 2];
@@ -106,17 +117,12 @@ export class RegionGrower {
             if (len > 0) targetNormal = { x: sumNx/len, y: sumNy/len, z: sumNz/len };
         }
 
-        // ⚡ THE COLOR STRICTNESS MATH
-        // The maximum distance between White (255,255,255) and Black (0,0,0) in 3D RGB space is ~441.67
         const maxRgbDist = 441.673; 
-        
-        // If Strictness is 1.0, allowed distance is 0. If 0.75, allowed distance is 25%.
         const allowedDist = (1.0 - colorStrictness) * maxRgbDist;
         let toleranceSq = allowedDist * allowedDist;
 
-        // Failsafe: Ensure tolerance is at least large enough to cover the seeds the user actually selected!
         let maxSeedDistSq = 0;
-        for (const idx of seedIndices) {
+        for (const idx of analysisSubset) {
             const dr = this.colors[idx * 4 + 0] - targetColor.r;
             const dg = this.colors[idx * 4 + 1] - targetColor.g;
             const db = this.colors[idx * 4 + 2] - targetColor.b;
@@ -125,15 +131,18 @@ export class RegionGrower {
         }
         toleranceSq = Math.max(toleranceSq, maxSeedDistSq + 1);
 
-        for (const idx of seedIndices) this.selectionManager.selectedIndices.add(idx);
-        (this.selectionManager as any).notify();
+        // ⚡ FIX 2: Do NOT call notify() here! Use our optimized fastHighlight instead.
+        // This prevents the GPU from reloading the entire scene when growth starts.
+        for (const idx of seedIndices) {
+            this.selectionManager.selectedIndices.add(idx);
+        }
+        this.sceneManager.fastHighlight(seedIndices);
         this.app.renderNextFrame = true;
 
         this.isGrowing = true;
 
         this.worker.postMessage({
             type: 'START_GROWTH',
-            // ⚡ Pass geomStrictness straight to the worker!
             payload: { seeds: seedIndices, targetColor, targetNormal, toleranceSq, geomStrictness } 
         });
     }
