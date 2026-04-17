@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Point Cloud Editor</title>
+    <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+    <div id="app-container">
+        <header id="top-bar">
+            <div class="logo">POINT CLOUD <span>ZERO-SHOT</span></div>
+            <div class="actions">
+                <button id="import-btn">📂 Import .PLY</button>
+                <button id="ai-segment-btn" class="primary">🤖 AI Segment (N)</button>
+                <button id="toggle-panel-btn" style="font-size: 16px; padding: 6px 10px;">🛠</button>
+            </div>
+        </header>
+
+        <div id="main-layout">
+            <aside id="left-toolbar">
+                <button class="tool active" title="Orbit">🔄</button>
+                <button class="tool" title="Select">🖱</button>
+            </aside>
+
+            <div id="canvas-container">
+                <canvas id="canvas"></canvas>
+                <div id="drop-hint">Drop .PLY file here to begin</div>
+                
+                <div id="gizmo-container">
+                    <div class="gizmo-line" id="gizmo-line-x" style="background: #ff4444;"></div>
+                    <div class="gizmo-line" id="gizmo-line-y" style="background: #44ff44;"></div>
+                    <div class="gizmo-line" id="gizmo-line-z" style="background: #4488ff;"></div>
+                    
+                    <div class="gizmo-label" id="gizmo-label-x" style="border: 2px solid #ff4444; color: #ff4444;">X</div>
+                    <div class="gizmo-label" id="gizmo-label-y" style="border: 2px solid #44ff44; color: #44ff44;">Y</div>
+                    <div class="gizmo-label" id="gizmo-label-z" style="border: 2px solid #4488ff; color: #4488ff;">Z</div>
+                </div>
+            </div>
+
+            <aside id="right-panel">
+                <div class="panel-section">
+                    <label>SCENE STATS</label>
+                    <div class="stat">Points: <span id="point-count">0</span></div>
+                    <div class="stat">Visible: <span id="visible-count">0</span></div>
+                    <div class="stat">File: <span id="file-name">None</span></div>
+                    <div class="stat">FPS: <span id="fps-counter">0</span></div>
+                </div>
+                <div class="panel-divider"></div>
+                
+                <div class="panel-section">
+                    <label>POINT CLOUD SETTINGS</label>
+                    <div class="transform-row">
+                        <span class="transform-label" style="width: 60px;">Point Size</span>
+                        <input type="range" id="point-size-slider" min="1.0" max="3.0" value="1.0" step="0.05" style="flex: 1; cursor: pointer;">
+                        <span id="point-size-label" style="width: 30px; text-align: right; font-size: 11px; font-family: monospace; font-weight: bold;">1.00</span>
+                    </div>
+                </div>
+                <div class="panel-divider"></div>
+                
+                <div class="panel-section">
+                    <label>REGION GROWING (G)</label>
+                    <div class="transform-row">
+                        <span class="transform-label" style="width: 60px;">Strictness</span>
+                        <div class="input-group"><input type="number" value="0.75" min="0" max="1" step="0.05" id="color-strict-val"><span class="axis-lbl" style="right: 5px;">COL</span></div>
+                        <div class="input-group"><input type="number" value="0.75" min="0" max="1" step="0.05" id="geom-strict-val"><span class="axis-lbl" style="right: 5px;">GEO</span></div>
+                    </div>
+                </div>
+                <div class="panel-divider"></div>
+
+                <div class="panel-section">
+                    <label>SELECTION</label>
+                    <div class="stat">X: <span id="coord-x">---</span></div>
+                    <div class="stat">Y: <span id="coord-y">---</span></div>
+                    <div class="stat">Z: <span id="coord-z">---</span></div>
+                </div>
+                <div class="panel-divider"></div>
+
+                <div class="panel-section" id="splat-panel" style="display: none;">
+                    <label style="color: var(--accent);">3DGS DENSIFICATION</label>
+                    <div class="transform-row">
+                        <input type="range" id="splat-density-slider" min="0" max="100" value="0" style="flex: 1; cursor: pointer;">
+                        <span id="splat-density-label" style="width: 40px; text-align: right; font-size: 11px; font-family: monospace; font-weight: bold;">0%</span>
+                    </div>
+                </div>
+                <div class="panel-divider" id="splat-divider" style="display: none;"></div>
+                
+                <div class="panel-section">
+                    <label>TRANSFORM</label>
+                    <div class="transform-row">
+                        <span class="transform-label">Position</span>
+                        <div class="input-group"><input type="number" value="0" id="pos-x"><span class="axis-lbl">X</span></div>
+                        <div class="input-group"><input type="number" value="0" id="pos-y"><span class="axis-lbl">Y</span></div>
+                        <div class="input-group"><input type="number" value="0" id="pos-z"><span class="axis-lbl">Z</span></div>
+                    </div>
+                    
+                    <div class="transform-row">
+                        <span class="transform-label">Rotation</span>
+                        <div class="input-group"><input type="number" value="0" id="rot-x" step="90"><span class="axis-lbl">X</span></div>
+                        <div class="input-group"><input type="number" value="0" id="rot-y" step="90"><span class="axis-lbl">Y</span></div>
+                        <div class="input-group"><input type="number" value="0" id="rot-z" step="90"><span class="axis-lbl">Z</span></div>
+                    </div>
+
+                    <div class="transform-row">
+                        <span class="transform-label">Scale</span>
+                        <div class="input-group scale-group"><input type="number" value="1" id="scale-val"></div>
+                    </div>
+                </div>
+
+                <div style="margin-top: auto; padding-top: 10px;">
+                    <button id="reset-scene-btn" style="width: 100%; padding: 10px; background: #444;">🔄 Reset Scene</button>
+                </div>
+            </aside>
+        </div>
+
+        <div id="loading-overlay" class="hidden">
+            <div class="spinner"></div>
+            <div id="loading-text">Processing Points...</div>
+            <div id="loading-progress">0%</div>
+        </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
