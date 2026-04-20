@@ -143,3 +143,35 @@ input[type=range]::-webkit-slider-thumb {
 input[type=range]::-webkit-slider-thumb:hover {
     transform: scale(1.3);
 }
+
+
+/* --- FPS SELECTOR --- */
+.fps-group {
+    display: flex;
+    flex: 1;
+    gap: 4px;
+}
+
+.fps-btn {
+    flex: 1;
+    background: #222;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: bold;
+    cursor: pointer;
+    padding: 4px 0;
+    transition: all 0.2s;
+}
+
+.fps-btn:hover {
+    background: #333;
+    color: var(--text);
+}
+
+.fps-btn.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}

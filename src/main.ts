@@ -11,7 +11,7 @@ import { HistoryManager } from './history';
 import { RegionGrower } from './region-grower';
 import { initPointSizeSlider } from './point-size-slider';
 import { initDensificationSlider } from './g-pc-densification';
-import { SceneManager } from './scene-manager'; // ⚡ NEW
+import { SceneManager } from './scene-manager'; 
 
 // --- ENGINE & DOM SETUP ---
 const canvas = document.getElementById('canvas') as HTMLCanvasElement;
@@ -35,20 +35,24 @@ window.addEventListener('resize', resize);
 resize();
 
 // --- SCENE & MODULE SETUP ---
-const sceneManager = new SceneManager(); // ⚡ CLEAN INITIALIZATION
+const sceneManager = new SceneManager(); 
 
 const camera = new pc.Entity('Camera');
 camera.addComponent('camera', { clearColor: new pc.Color(0.01, 0.01, 0.01) });
 app.root.addChild(camera);
 
-const cameraController = new CameraController(camera, container, () => app.renderNextFrame = true);
+// ⚡ THE FIX: Declare the render flags FIRST, before passing them!
+let pendingRender = true;
+const requestRender = () => { pendingRender = true; }; 
+
+// Now we can safely pass requestRender to the controllers
+const cameraController = new CameraController(camera, container, requestRender);
 const lodManager = new LODManager(camera);
-const focalManager = new FocalPointManager(camera, cameraController, container, () => app.renderNextFrame = true);
+const focalManager = new FocalPointManager(camera, cameraController, container, requestRender);
 
 const historyManager = new HistoryManager();
-const selectionManager = new SelectionManager(historyManager); 
+const selectionManager = new SelectionManager(historyManager);
 
-// ⚡ CLEAN: Selection Highlight logic using our SceneManager
 selectionManager.onSelectionChanged = () => {
     const leaves = sceneManager.octreeLeaves;
     if (!leaves || leaves.length === 0) return;
@@ -99,7 +103,6 @@ selectionManager.onSelectionChanged = () => {
     app.renderNextFrame = true;
 };
 
-// ⚡ Inject SceneManager into Tools
 const regionGrower = new RegionGrower(app, selectionManager, historyManager, sceneManager);
 const aiTool = new AISegmentationTool(app, camera, selectionManager, historyManager, sceneManager);
 
@@ -120,6 +123,8 @@ focalManager.onPointPicked = (hitPoint: pc.Vec3) => {
 };
 
 let globalSceneSize = 10; 
+let targetFPS = 0; 
+let frameAccumulator = 0; 
 
 // --- RENDER LOOP ---
 let wasMoving = false;
@@ -131,62 +136,73 @@ app.on('update', (dt) => {
     cameraController.update(dt);
     const moving = cameraController.isMoving;
 
-    if (camera.camera && (moving || wasMoving || forceGizmoUpdate || lodManager.needsUpdate)) {
-        const viewMat = camera.camera.viewMatrix;
-        
-        const projectAxis = (axis: pc.Vec3, lineId: string, labelId: string) => {
-            const camVec = new pc.Vec3();
-            viewMat.transformVector(axis, camVec); 
+    // 1. Does the scene WANT to render? (Mouse moved, camera moved, UI clicked)
+    let wantsToRender = pendingRender || moving || wasMoving || forceGizmoUpdate || lodManager.needsUpdate;
 
-            const L = 30; 
-            const x = camVec.x * L;
-            const y = -camVec.y * L; 
-
-            const line = document.getElementById(lineId)!;
-            const label = document.getElementById(labelId)!;
-
-            const angle = Math.atan2(y, x) * (180 / Math.PI);
-            const dist = Math.sqrt(x*x + y*y);
-
-            line.style.width = `${dist}px`;
-            line.style.left = `40px`;
-            line.style.top = `40px`;
-            line.style.transform = `rotate(${angle}deg)`;
-
-            label.style.left = `${40 + x}px`;
-            label.style.top = `${40 + y}px`;
-
-            const zIndex = Math.round(camVec.z * -100) + 1000;
-            label.style.zIndex = zIndex.toString();
-            line.style.zIndex = (zIndex - 1).toString();
-        };
-
-        projectAxis(new pc.Vec3(1,0,0), 'gizmo-line-x', 'gizmo-label-x');
-        projectAxis(new pc.Vec3(0,1,0), 'gizmo-line-y', 'gizmo-label-y');
-        projectAxis(new pc.Vec3(0,0,1), 'gizmo-line-z', 'gizmo-label-z');
-        
-        forceGizmoUpdate = false; 
+    // 2. Does the Clock ALLOW it to render?
+    let timeToRender = true;
+    if (targetFPS > 0) {
+        frameAccumulator += dt;
+        const frameTime = 1.0 / targetFPS;
+        if (frameAccumulator >= frameTime) {
+            frameAccumulator = frameAccumulator % frameTime; 
+        } else {
+            timeToRender = false; // Blocked by FPS Throttler!
+        }
     }
 
-    if (moving || wasMoving || lodManager.needsUpdate) {
+    // 3. The Iron Gate: Only render if both are true!
+    if (wantsToRender && timeToRender) {
+        
+        if (camera.camera && (moving || wasMoving || forceGizmoUpdate || lodManager.needsUpdate)) {
+            const viewMat = camera.camera.viewMatrix;
+            const projectAxis = (axis: pc.Vec3, lineId: string, labelId: string) => {
+                const camVec = new pc.Vec3();
+                viewMat.transformVector(axis, camVec); 
+                const L = 30; 
+                const x = camVec.x * L; const y = -camVec.y * L; 
+                const line = document.getElementById(lineId)!;
+                const label = document.getElementById(labelId)!;
+                const angle = Math.atan2(y, x) * (180 / Math.PI);
+                const dist = Math.sqrt(x*x + y*y);
+                line.style.width = `${dist}px`; line.style.left = `40px`; line.style.top = `40px`; line.style.transform = `rotate(${angle}deg)`;
+                label.style.left = `${40 + x}px`; label.style.top = `${40 + y}px`;
+                const zIndex = Math.round(camVec.z * -100) + 1000;
+                label.style.zIndex = zIndex.toString(); line.style.zIndex = (zIndex - 1).toString();
+            };
+            projectAxis(new pc.Vec3(1,0,0), 'gizmo-line-x', 'gizmo-label-x');
+            projectAxis(new pc.Vec3(0,1,0), 'gizmo-line-y', 'gizmo-label-y');
+            projectAxis(new pc.Vec3(0,0,1), 'gizmo-line-z', 'gizmo-label-z');
+        }
+
         if (isAsleep) {
             lodManager.resetTimer();
             isAsleep = false;
         }
+        
         const activePoints = lodManager.update(); 
         if (activePoints > 0) visibleLabel.innerText = activePoints.toLocaleString();
-        fpsLabel.innerText = Math.round(lodManager.currentFPS).toString();
+        
+        fpsLabel.innerText = targetFPS > 0 ? `${targetFPS} (Capped)` : Math.round(lodManager.currentFPS).toString();
+        
+        // ⚡ Give the GPU the green light, and reset the flags
         app.renderNextFrame = true;
-    } else {
+        pendingRender = false;
+        forceGizmoUpdate = false; 
+
+    } else if (!wantsToRender) {
+        // Go to sleep to save battery
         if (!isAsleep) {
             fpsLabel.innerText = "0 (Asleep)";
             isAsleep = true;
+            frameAccumulator = 0; 
         }
     }
     wasMoving = moving;
 });
 
 function collectLeaves(node: OctreeNode, out: OctreeNode[]) {
+// ... Keep everything else exactly the same below this!
     if (!node.children || node.children.length === 0) {
         out.push(node);
         return;
@@ -241,7 +257,6 @@ function renderPointCloud(positions: Float32Array, colors: Uint8Array, normals: 
     lodManager.setTarget(entity, isSplat);
     focalManager.setOctree(root);
 
-    // ⚡ CLEAN: Store directly into SceneManager
     sceneManager.octreeRoot = root;
     sceneManager.octreeLeaves = leaves;
 
@@ -274,7 +289,6 @@ async function loadFile(file: File) {
     const data = await parsePLY(buffer);
     if (!data) return;
 
-    // ⚡ CLEAN: Update SceneManager
     sceneManager.reset();
     sceneManager.positions = data.positions;
     sceneManager.originalColors = new Uint8Array(data.colors);
@@ -404,6 +418,18 @@ document.getElementById('reset-scene-btn')!.addEventListener('click', () => {
     app.renderNextFrame = true;
 });
 
+// ⚡ NEW: Wire up the FPS Buttons!
+const fpsButtons = document.querySelectorAll('.fps-btn');
+fpsButtons.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+        fpsButtons.forEach(b => b.classList.remove('active'));
+        const target = e.target as HTMLElement;
+        target.classList.add('active');
+        targetFPS = parseInt(target.getAttribute('data-fps') || '0', 10);
+        app.renderNextFrame = true; // Instantly show UI change
+    });
+});
+
 initDensificationSlider(lodManager);
 initPointSizeSlider(app, lodManager);
 
@@ -421,7 +447,7 @@ window.addEventListener('keydown', (e) => {
         if (selectionManager.selectedIndices.size > 0) {
             seeds = Array.from(selectionManager.selectedIndices);
         } else if (focalManager.cameraController.targetPivot) {
-            const root = sceneManager.octreeRoot; // ⚡ CLEAN: Access via Manager
+            const root = sceneManager.octreeRoot; 
             if (root) {
                 const nearest = findNearestNeighbors(root, focalManager.cameraController.targetPivot, 1);
                 if (nearest.length > 0) seeds = [nearest[0]];
@@ -432,7 +458,11 @@ window.addEventListener('keydown', (e) => {
             const colStrict = parseFloat((document.getElementById('color-strict-val') as HTMLInputElement).value) ?? 0.75;
             const geoStrict = parseFloat((document.getElementById('geom-strict-val') as HTMLInputElement).value) ?? 0.75;
             
-            regionGrower.toggleGrowth(seeds, colStrict, geoStrict);
+            // ⚡ NEW: Read the neighbors slider and pass it down!
+            const kNeighborsElement = document.getElementById('k-neighbors-val') as HTMLInputElement;
+            const kNeighbors = kNeighborsElement ? parseInt(kNeighborsElement.value, 10) : 50;
+            
+            regionGrower.toggleGrowth(seeds, colStrict, geoStrict, kNeighbors);
         } else {
             console.warn("⚠️ No selection or focal point to grow from!");
         }

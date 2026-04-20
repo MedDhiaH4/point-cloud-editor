@@ -62,15 +62,15 @@ export class RegionGrower {
         });
     }
 
-    public toggleGrowth(seedIndices: number[], colorStrictness: number = 0.75, geomStrictness: number = 0.75) {
+    public toggleGrowth(seedIndices: number[], colorStrictness: number = 0.75, geomStrictness: number = 0.75, kNeighbors: number = 50) {
         if (this.isGrowing) {
             this.stopGrowth();
         } else {
-            this.startGrowth(seedIndices, colorStrictness, geomStrictness);
+            this.startGrowth(seedIndices, colorStrictness, geomStrictness, kNeighbors);
         }
     }
 
-    private startGrowth(seedIndices: number[], colorStrictness: number, geomStrictness: number) {
+    private startGrowth(seedIndices: number[], colorStrictness: number, geomStrictness: number, kNeighbors: number) {
         if (!this.colors || !this.normals || seedIndices.length === 0) return;
 
         this.preGrowthState = new Set([...this.selectionManager.selectedIndices].filter(x => !seedIndices.includes(x)));
@@ -91,8 +91,8 @@ export class RegionGrower {
 
         this.worker.postMessage({
             type: 'START_GROWTH',
-            // ⚡ Clean payload: Exactly 3 variables!
-            payload: { seeds: seedIndices, toleranceSq, geomStrictness } 
+            // ⚡ Add kNeighbors to the payload!
+            payload: { seeds: seedIndices, toleranceSq, geomStrictness, kNeighbors } 
         });
     }
 

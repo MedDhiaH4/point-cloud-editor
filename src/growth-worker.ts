@@ -9,6 +9,10 @@ let isGrowing = false;
 let sleepyCore = new Set<number>();
 let lastSeedCount = 0;
 
+let lastToleranceSq = -1;
+let lastGeomStrictness = -1;
+let lastKNeighbors = -1;
+
 self.onmessage = (e) => {
     const { type, payload } = e.data;
 
@@ -28,21 +32,32 @@ self.onmessage = (e) => {
         if (!rootOctree || !positions || !colors || !normals) return;
         isGrowing = true;
 
-        if (payload.seeds.length < lastSeedCount || payload.seeds.length <= 1) {
-            sleepyCore.clear();
-            console.log("👷‍♂️ [Worker] Selection shrank or reset. Cache cleared.");
-        }
-        lastSeedCount = payload.seeds.length;
+        const rulesChanged = (
+            payload.toleranceSq !== lastToleranceSq ||
+            payload.geomStrictness !== lastGeomStrictness ||
+            payload.kNeighbors !== lastKNeighbors
+        );
 
-        // ⚡ THE FIX: Passing exactly 3 arguments to match the signature!
-        runGrowth(payload.seeds, payload.toleranceSq, payload.geomStrictness);
+        // Nuke the cache if selection shrinks OR if the rules change
+        if (payload.seeds.length < lastSeedCount || payload.seeds.length <= 1 || rulesChanged) {
+            sleepyCore.clear();
+            console.log("👷‍♂️ [Worker] Cache cleared due to new rules or selection shrink.");
+        }
+
+        // Save current state for next time
+        lastSeedCount = payload.seeds.length;
+        lastToleranceSq = payload.toleranceSq;
+        lastGeomStrictness = payload.geomStrictness;
+        lastKNeighbors = payload.kNeighbors;
+
+        runGrowth(payload.seeds, payload.toleranceSq, payload.geomStrictness, payload.kNeighbors);
     }
     else if (type === 'STOP_GROWTH') {
         isGrowing = false;
     }
 };
 
-function runGrowth(seeds: number[], toleranceSq: number, geomStrictness: number) {
+function runGrowth(seeds: number[], toleranceSq: number, geomStrictness: number, kNeighbors: number) {
     const initialQueue = seeds.filter(idx => !sleepyCore.has(idx));
     console.log(`👷‍♂️ [Worker] Total Seeds: ${seeds.length} | Skipping Core: ${sleepyCore.size} | Active Frontier: ${initialQueue.length}`);
     
@@ -66,7 +81,7 @@ function runGrowth(seeds: number[], toleranceSq: number, geomStrictness: number)
             targetVec.y = positions![currentIdx * 3 + 1];
             targetVec.z = positions![currentIdx * 3 + 2];
 
-            const neighbors = findNearestNeighbors(rootOctree!, targetVec as any, 50);
+            const neighbors = findNearestNeighbors(rootOctree!, targetVec as any, kNeighbors);
 
             let sumR = colors![currentIdx * 4 + 0];
             let sumG = colors![currentIdx * 4 + 1];
