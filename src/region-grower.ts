@@ -73,77 +73,26 @@ export class RegionGrower {
     private startGrowth(seedIndices: number[], colorStrictness: number, geomStrictness: number) {
         if (!this.colors || !this.normals || seedIndices.length === 0) return;
 
-        // ⚡ FIX 1: O(1) Set Lookup instead of O(N^2) Array Filter!
-        // This stops the main thread from freezing when you have thousands of points selected.
-        const seedSet = new Set(seedIndices);
-        this.preGrowthState = new Set();
-        for (const val of this.selectionManager.selectedIndices) {
-            if (!seedSet.has(val)) {
-                this.preGrowthState.add(val);
-            }
-        }
-        
+        this.preGrowthState = new Set([...this.selectionManager.selectedIndices].filter(x => !seedIndices.includes(x)));
         this.currentGrowthSession = new Set(seedIndices);
-
-        const analysisSubset = seedIndices.slice(0, 500);
-
-        let sumR = 0, sumG = 0, sumB = 0;
-        for (const idx of analysisSubset) {
-            sumR += this.colors[idx * 4 + 0];
-            sumG += this.colors[idx * 4 + 1];
-            sumB += this.colors[idx * 4 + 2];
-        }
-        
-        const targetColor = {
-            r: sumR / analysisSubset.length,
-            g: sumG / analysisSubset.length,
-            b: sumB / analysisSubset.length
-        };
-
-        let sumNx = 0, sumNy = 0, sumNz = 0;
-        let validNormals = 0;
-        for (const idx of analysisSubset) {
-            const nx = this.normals[idx * 3 + 0];
-            const ny = this.normals[idx * 3 + 1];
-            const nz = this.normals[idx * 3 + 2];
-            if (nx*nx + ny*ny + nz*nz > 0.1) { 
-                sumNx += nx; sumNy += ny; sumNz += nz;
-                validNormals++;
-            }
-        }
-        let targetNormal = { x: 0, y: 0, z: 0 };
-        if (validNormals > 0) {
-            const len = Math.sqrt(sumNx*sumNx + sumNy*sumNy + sumNz*sumNz);
-            if (len > 0) targetNormal = { x: sumNx/len, y: sumNy/len, z: sumNz/len };
-        }
 
         const maxRgbDist = 441.673; 
         const allowedDist = (1.0 - colorStrictness) * maxRgbDist;
-        let toleranceSq = allowedDist * allowedDist;
+        const toleranceSq = allowedDist * allowedDist;
 
-        let maxSeedDistSq = 0;
-        for (const idx of analysisSubset) {
-            const dr = this.colors[idx * 4 + 0] - targetColor.r;
-            const dg = this.colors[idx * 4 + 1] - targetColor.g;
-            const db = this.colors[idx * 4 + 2] - targetColor.b;
-            const distSq = dr*dr + dg*dg + db*db;
-            if (distSq > maxSeedDistSq) maxSeedDistSq = distSq;
-        }
-        toleranceSq = Math.max(toleranceSq, maxSeedDistSq + 1);
-
-        // ⚡ FIX 2: Do NOT call notify() here! Use our optimized fastHighlight instead.
-        // This prevents the GPU from reloading the entire scene when growth starts.
         for (const idx of seedIndices) {
             this.selectionManager.selectedIndices.add(idx);
         }
-        this.sceneManager.fastHighlight(seedIndices);
+        
+        (this.selectionManager as any).notify();
         this.app.renderNextFrame = true;
 
         this.isGrowing = true;
 
         this.worker.postMessage({
             type: 'START_GROWTH',
-            payload: { seeds: seedIndices, targetColor, targetNormal, toleranceSq, geomStrictness } 
+            // ⚡ Clean payload: Exactly 3 variables!
+            payload: { seeds: seedIndices, toleranceSq, geomStrictness } 
         });
     }
 
